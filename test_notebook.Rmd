@@ -1,0 +1,375 @@
+---
+title: "Forecasting Homework #2"
+output: html_notebook
+---
+
+#### Introduction
+This notebook serves as an interactive document where we try to forecast the U.S. price of Ground Beef. 
+
+#### 1) Dataset Description
+The Dataset used for forecasting is monthly data from January 1984 to September 2017. The features in this dataset are the following:<br><br>
+1. Date Variable: Month & Year <br>
+2. Ground beef price: Prices of ground beef during specified dates<br>
+3. $p_t$: Log price of beef<br>
+4. $\pi_t$: Price Inflation of $p_t$ <br><br><br>
+
+*__Important: It is important to note that there was a 0 Ground Beef price value for October 2012, which corresponded to a NA log price and price inflation, as a means to handle this missingness, we have used a linear approximation of this missing value using the imputeTS package with the na.interpolate function__*
+
+
+```{r}
+# Import relevant packages
+library(fpp)
+library(readxl)
+library(ggplot2)
+library(imputeTS)
+library(xts)
+
+```
+
+```{r}
+# Read dataset
+data <- read_excel("BeefPrices.xlsx")
+# Convert dataset into time series object
+data_ts = ts(data[2:length(data)], start = c(1984, 1), frequency = 12)
+data_ts = na.interpolation(data_ts)  # impute missing values using a linear interpolation
+colnames(data_ts) <- c("Price","Log_Price","Inflation")
+# Make sure data imported correctly
+head(data_ts)
+```
+
+Now we want to see whether $p_t$ and $\pi_t$ are stationary variables - we can do so by visualizing both features, and plotting their corresponding Autocorrelation Function
+
+```{r}
+autoplot(data_ts, facets = TRUE) #plot the features
+ggAcf(data_ts[,2], main = "ACF plot for log of price")
+ggAcf(data_ts[,3], main = "ACF plot for price inflation")
+
+```
+#### Takeaways
+It seems obvious from plotting our features, that 
+the Price variable exhibits an upward trend (minus a sharp decrease in the $347^{th}$ entry) and thus is __not__ stationary. <br><br>
+The log price $p_t$ exhibits similar behavior, with an even sharper trend and some variance in the first half of the plot. Hence, it is also __not__ stationary. This can be confirmed by a simple glance at it's ACF plot, the ACF is consistently above the stationarity threshold *(blue lines)* for all lags. <br><br>
+The price inflation $\pi_t$ on the other hand, exhibits a consistent mean across time with some "jumps" or variations at some points in time - by glancing at it's ACF, we can see that it only crosses the stationarity threshold at lag = 1 and it's consistently stationary after that. We can say that it __is__ overall a stationary process, differencing the log price has succesfully reproduced a stationary process.
+
+#### 2) Modeling
+
+##### a) Price $p_t$
+
+*If you wish to go over the details of the models discussed below, please refer to the otexts and handout resources in the course webpage*
+
+
+Now going back to the plot of $p_t$
+
+```{r}
+autoplot(data_ts[,"Log_Price"]) + ylab("Log Price") #plot data
+```
+
+
+We can see that the timeseries contains an upward trend component $T_t$ and some seasonal component $S_t$ with varying strenghts. Getting a glance at the data offers good indicators to which models might work and which ones don't. <br><br>
+__The exponential smoothing model__ tries to capture with a varying degree the effect of the most recent data points with historical data, the exponential smoothing model can be formulated accordingly: <br>
+$\hat{y}_{t+1|t} = \alpha y_t + \alpha(1-\alpha)y_{t-1} + \alpha(1-\alpha)^2y_{t-2} + ...$ <br>
+However, the exponential smoothing model is not as adept at modeling the trend and seasonal components present that can be observed in our model.<br><br>
+__The Holt linear trend method__ extends exponential smoothing by adding a trend component to the model presented above, if we summarize the linear component captured by the exponential smoothing model above as $l_t$, we can add a trend component <br> $b_t = \beta^*(l_t - l_{t-1}) + (1-\beta*)b_{t-1}$ <br> This technique better captures the trend component and is hypothetically better suited for the data. <br><br>
+__The Holt-Winters Model__ adds on top of the previously discussed holt model, by adding a seasonal component $s_t$ that captures both the changes in $l_t$ and $b_t$ *(refer to otext page for deeper insight on formula)*. This technique is hypothetically better suited for our problem, becauase it captures both the trend and seasonal components of the log price's $p_t$ behaviour. <br><br>
+
+Let's compare all of these three models on our dataset below:
+
+```{r}
+train <- window(data_ts, end = c(2016,12)) # training set being every observation till 2016
+test <- window(data_ts, start = c(2017,1)) # test set being all 2017 observations
+
+# Modeling for Price data
+fc_ses <- ses(train[,"Log_Price"], h = 9)     # exponential smoothing
+fc_holt <- holt(train[,"Log_Price"], h = 9)    # holt linear trend model
+fc_hw <- hw(train[,"Log_Price"], h = 9)      # holt-winters model
+
+# Plot the different forecasts
+autoplot(fc_ses,colour = TRUE) + autolayer(fc_holt, colour = "green") + autolayer(fc_hw, colour = "yellow") + autolayer(test[,'Log_Price'], colour = TRUE)    # plot all the forecasts against test set
+
+```
+Apparently, complex does not always mean better, the Holt model better accurately captures the behavior of our model (green). <br><br>
+We can try to check the performance of each of these models more formally: <br><br>
+
+Let's first check the residuals of each of these models - R allows us to do so with the checkresiduals() command
+
+```{r}
+#check residuals for SES model
+checkresiduals(fc_ses)
+
+```
+
+```{r}
+#check residuals for Holt model
+checkresiduals(fc_holt)
+```
+
+
+```{r}
+#check residuals for Holt-Winters model
+checkresiduals(fc_hw)
+```
+
+As we can see, the residuals of both the exponential smoothing model and the holt method are stationary, both with a $p-value > 0.05$ in the Ljung-Box test. However, the Holt-Winter's additive method does not produce stationary residuals.<br>
+Since all of these models belong to the same family of exponential smoothers, we can compare their $AICc$ scores. In brief, the $AICc$ is a model selection score criterion that evaluates the tradeoff between model accuracy and model complexity - for more information on the $AICc$ score, please refer to this [website](http://www.sciencedirect.com/science/article/pii/S2212977414000064). <br>
+Essentially, the model with the lowest $AICc$ score is the best. It is important to note, that we cannot cross compare different families of models using the $AICc$ score.
+
+```{r}
+list_AICc = list("SES_AICc" = fc_ses$model$aicc, "Holt_AICc" = fc_holt$model$aicc, "HW_AICc" = fc_hw$model$aicc)
+print(list_AICc)
+```
+Our hypothesis is confirmed, the holt method provides the best solution. 
+
+
+
+##### b) ARMA Model on $\pi_t$
+
+###### Note that you can find detailed explanations of the models in the Handouts and Otexts ressources, as well as the [wikipedia page](http://bit.ly/2iRiy55) for $ARIMA(p,d,q)$ models. <br><br>
+
+It is essential to note that $ARIMA(p,d,q)$ Models are Autoregressive Integrated Moving Average models. Intuitively speaking, without going into the formal mathematical details of each variation of $ARIMA(p,d,q)$ models - $ARIMA(p,d,q)$ models combine the following elements:<br><br>
+
+
+
+1. Autogregressive element with number of time lags decided by $p$ <br>
+2. An Integrated element which replaced the original feature with the differenced feature and is decided by $d$ <br>
+3. Moving average element with the order of the moving average being decided by the parameter $q$ <br><br>
+Hence, when using R, we can model an ARMA model using the Arima() function but we set the $d$ parameter = 0. <br><br>
+
+Now there are two ways we can go about the modelling task, we can either choose an __iterative approach__, where at each timestamp $t$, we model $y_t$ by leveraging all the information $I_{t-1}$ - practically speaking, this is a rolling forecast, which means at each point in timme in our forecast we update our model. <br><br>
+On the other hand we can go about the modelling using a direct approach, this means that by creating a model $y_t$ at time stamp $t$, we can predict $h$ timestamps into the future. <br><br>
+Let's see both these methodologies in action: <br><br>
+
+##### Iterative
+
+```{r}
+
+# This function takes in as input our timeseries x, we specify the parameters: 
+# Forecast Horizon - h 
+# P,D,Q values for our Arima model 
+# End date of the train data 
+# Start date for the test data.
+# Column name we want to forecast, in this case it's the "Inflation""
+
+iterative_training <- function(x, h = 1, p = 1, d = 0, q = 1, train_end = c(2016,12), test_start = c(2017,1), colname = "Inflation")
+  {
+    train <- window(x, end=train_end)          # create training data
+    train <- train[,colname]                   # constrain it to inflation variable
+    test <- window(x,start= test_start)        # repeat for test data
+    test <- test[,colname]
+    n <- length(test) - h + 1                  # create the forecast horizon for the iterative algorithm
+    fit <- Arima(train, order = c(p,d,q))      # model initial training data using ARMA(1,1)
+    fcmat <- matrix(0, nrow=n, ncol=h)         # create an empty time series to be filled up by forecast data
+  
+    for(i in 1:n)
+      { 
+      new <- window(x[,colname], end=2016 + (i-1)/12)        # continuously grow training set at each iteration
+      refit <- Arima(new, order= c(1,0,1))                   # model on the new training data
+      fcmat[i,] <- forecast(refit, h=h)$mean                 # save forecast data
+    }
+    my_list <- list("Forecast" = ts(fcmat, start = test_start, frequency = 12), "Fit" = fit, "Refit" = refit)
+    return(my_list)   # return forecast in a time series object, initial model and refit model
+  }
+
+fc1 <- iterative_training(data_ts)     # forecast inflation feature using an iterative one step forecast
+autoplot(fc1$Forecast) + autolayer(test)        # plot forecast against test data
+
+```
+As we can see, the forecast gravitates towards the mean of the test data, but it doesn't capture the "jumps" in the data. Let's try on another form of iterative models, where instead of continuously grow our training data, we iteratively add our one step forecast $\hat{y_{t+1}}$ as training data for the subsequent forecast $\hat{y_{t+2}}$ <br><br>
+
+```{r}
+
+# This function takes in as input our timeseries x, we specify the parameters: 
+# Forecast Horizon - h 
+# P,D,Q values for our Arima model 
+# End date of the train data 
+# Start date for the test data.
+# Column name we want to forecast, in this case it's the "Inflation""
+
+iterative_forecast <- function(x, h = 1, p = 1, d = 0, q = 1, train_end = c(2016,12), test_start = c(2017,1), colname = "Inflation")
+{
+  train <- window(x, end=train_end)          # create training data
+  train <- train[,colname]                   # constrain it to inflation variable
+  test <- window(x,start= test_start)        # repeat for test data
+  test <- test[,colname]                     
+  n <- length(test) - h + 1                  # create the forecast horizon for the iterative algorithm
+  fit <- Arima(train, order = c(p,d,q))      # model initial training data using ARMA(1,1)
+  fcmat <- matrix(0, nrow=n, ncol=h)         # create an empty time series to be filled up by forecast data
+  
+  for(i in 1:n)
+  { 
+    f <- forecast(train, h = h)$mean                          # perform one step forecast on initial training data
+    new <- rbind.xts(train, f)                                # add that forecast to the training data
+    new <- ts(new, start = c(1984,1), frequency = 12)         # convert xts object to ts object for modeling
+    refit <- Arima(new, order= c(1,0,1))                      # refit model using new training data
+    fcmat[i,] <- forecast(refit, h=h)$mean
+  }
+  my_list <- list("Forecast" = ts(fcmat, start = test_start, frequency = 12), "Fit" = fit, "Refit" = refit)
+  return(my_list)    # return forecast in a time series object, initial model and refit model
+  }
+
+fc2 <- iterative_forecast(data_ts)  # forecast inflation feature using iterative forecast with one step forecasts added as training data
+autoplot(fc2$Forecast) + autolayer(test)     # plot the forecast against test set
+
+
+```
+
+Using $\hat{y}_{t}$ as training data to forecast $\hat{y}_{t+1}$ leads to a stable one line forecast around the mean of the test set. 
+<br><br>
+
+##### Direct Forecast
+
+Direct forecasts are much easier to compute on R - With no need to loop over the onstep forecast of the training data. A direct forecast can be computed with the following code:<br>
+
+```{r}
+
+# create train and test data
+train <- window(data_ts[,"Inflation"], end = c(2016,12))      # training data being all data up to 2017
+test  <- window(data_ts[,"Inflation"], start = c(2017,1))     # test data being all 2017 values
+# fit model on train data with forecast horizon being equal to length of test data
+fit_direct <- Arima(train, order = c(1,0,1))                  # fit an ARMA(1,1) model
+fc_direct <- forecast(fit_direct, h = length(test))
+autoplot(fc_direct) + autolayer(test)                   # plot model with confidence intervals
+autoplot(fc_direct$mean) + autolayer(test)              # plot point estimations
+
+```
+We can see that the direct forecasting technique produced a forecast similar to the iterative model using one step forecasts as training data. Let's try to compare all of these models.
+
+
+As a benchmark to compare the $ARMA(p,q)$ models we created, let's compute an optimized $ARIMA(p,q,d)$ model via the auto.arima() function - auto.arima() does all of the hyperparamter optimization for us. <br>
+
+```{r}
+
+fit_auto <- auto.arima(train, stepwise = FALSE) # we specify stepwise = FALSE so it doesn't take any shortcuts during optimization
+fc_auto  <- forecast(fit_auto, h = length(test))
+autoplot(fc_auto) + autolayer(test)             # plot model with intervals
+autoplot(fc_auto$mean) + autolayer(test)        # plot point estimation
+
+```
+```{r}
+fit_auto       # what was the best model for the data?
+```
+We can see that auto.arima() fitted an autoregressive model of order 2 $AR(2)$. Let's evaluate performances below.
+
+
+#### 3) Model Comparison
+Now we need to compare our model performances, and select the best model. To summarize, we have fitted the following models:
+
+1.  $ARMA(1,1)$ that we initially fit in both our iterative models:  _fc1$fit & fc2$fit_
+2.  $ARMA(1,1)$ model with iterative point estimations using training data: _fc1$refit_
+3.  $ARMA(1,1)$ model with iterative point estimations using forecast data: _fc2$refit_
+4.  $ARMA(1,1)$ model with direcet forecasting for test data: *fc_direct*
+5.  $AR(2)$ model which was derived using the auto.arima() model *fc_auto*
+
+Since all the models are part of the $ARIMA(p,d,q)$ family of models, let's compare the $AICc$ score and check their residuals. 
+
+```{r}
+# Check residuals of fc1$fit (same result for fc2$fit)
+checkresiduals(fc1$Fit)
+```
+
+
+
+
+```{r}
+# Check residuals of fc1$refit
+checkresiduals(fc1$Refit)
+```
+
+```{r}
+# Check residuals of fc2$refit
+checkresiduals(fc2$Refit)
+```
+```{r}
+# Check residuals of direct forecast
+checkresiduals(fc_direct)
+```
+
+
+```{r}
+# Check residuals of auto.arima
+checkresiduals(fc_auto)
+
+```
+We are pleased that all the residuals of these models have acheived some level of sationarity, with all of them having $p-values > 0.05$ in the Ljung-Box test. <br><br>
+Now let's compare the $AICc$ score for each model: <br>
+
+```{r}
+my_list2 <- list("Iterated Initial Model" = fc1$Fit$aicc, "Iterated Training Refit" = fc1$Refit$aicc, "Iterated Forecast Refit" = fc2$Refit$aicc, "Direct Forecast" = fc_direct$model$aicc, "Autoregressive(2)" = fc_auto$model$aicc)
+print(my_list2)
+```
+It seems like the Iterated Forecast Refit has the best performance. Let's compare using the Mincer-Zarnowitz regression. <br><br>
+The Mincer-Zarnowitz regression is basically regressing actual realized values over the forecast ones - meaning regressing our test data over the forecasts we have produced. The regression should look something like this <br><br>
+$\alpha_{t+1} = \beta_0 + \beta_1\hat{\alpha}_{t+1}$ <br><br>
+After deriving the regression, we should test for the joint assumption that $\beta_0$ = 0 and $\beta_1 = 1$. _For more details visit this [website](https://eranraviv.com/volatility-forecast-evaluation-in-r/)_ <br><br>
+
+```{r}
+
+# This is a function that takes in as input the actual realized test data, and the forecast data and returs a linear regression of the test data on the forecast data and it's coefficients, and a linear hypothesis test over the Mincer-Zarnowitz assumptions
+
+MZ_test <- function(test, forecast_data)
+{
+  MZ_regression = lm(test~forecast_data)
+  coefficients  = summary(MZ_regression)$coef
+  #hypothesis_test = linearHypothesis(MZ_regression, c("(Intercept) = 0", "forecast_data = 1"))
+  mylist <- list("MZ_Model" = MZ_regression, "Coefficients" = coefficients) 
+  return(mylist)
+}
+```
+Once we have the F score from the hypothesis testing of each model, we can compare it with the F critical value. The degree of freedom of our numerator is $Nb_{parameters} - 1 = 2 - 1 = 1$ , and the degree of freedom of our denominator is $Nb_{observations} - Nb_{parameters} = 9 - 2 = 7$, which gives an F critical value of $3.59$. All of our models pass the test. However our second model can't be tested with Mincer-Zarnovitz because of auto-colinearity, since its forecasts are constant.
+```{r}
+MZ_table = list()
+MZ_table[1] = linearHypothesis(MZ_test(test, fc1$Forecast)$MZ_Model, c("(Intercept) = 0", "forecast_data = 1"))$F[2]
+MZ_table[2] = FALSE
+MZ_table[3] = linearHypothesis(MZ_test(test, fc_direct$mean)$MZ_Model, c("(Intercept) = 0", "forecast_data = 1"))$F[2]
+MZ_table[4] = linearHypothesis(MZ_test(test, fc_auto$mean)$MZ_Model, c("(Intercept) = 0", "forecast_data = 1"))$F[2]
+MZ_table = data.frame(MZ_table)
+names(MZ_table)[1] = "fc1"
+names(MZ_table)[2] = "fc2"
+names(MZ_table)[3] = "fc_direct"
+names(MZ_table)[4] = "fc_auto"
+row.names(MZ_table)[1] = "F score" 
+MZ_table = rbind(MZ_table, "Significant" = c("Yes", "Impossible", "Yes", "Yes"))
+print(MZ_table)
+
+```
+<br><br>
+
+Since the MZ-Test doesn't offer any indication on our most performative model (Forecast Data Model _or fc2_), we can run a third test to have a complete overview of performance. The Deibold-Mariano test is a statistical test that compares model performance between two different models. <br>
+Intuitively speaking, it compares the forecast error of a pair of models $(Model \space A, Model \space B)$ and derives a DM statistic out of both forecast errors. If the DM statistic is positive, it means the $Model \space B$ outperforms $Model \space A$, if it is negative, $Model \space A$ outperforms $Model \space B$.  Let's compute the DM statistic for all pairs of models we've used thus far and see which one performs better. <br><br>
+
+```{r}
+
+# This is a  a Diebold-Mariano test between all the models, with the Iterated Forecast Refit (fc2) model being the benchmark model of comparison
+
+
+dm_test <- function(test_data, model_1, model_2)  # function that takes in test data, and the forecast values of models to be compared
+{
+  report <- dm.test((test_data - model_1), (test_data - model_2), alternative = "two.sided", h = 1, power = 2)
+  return(report)
+}
+
+dm_test1 = dm_test(test, fc1$Forecast, fc2$Forecast) #comparison between Iterated training data model and Iterated forecast data
+dm_test2 = dm_test(test, fc1$Forecast, fc_direct$mean) #comparison between Iterated training data model and direct forecast model
+dm_test3 = dm_test(test, fc1$Forecast, fc_auto$mean) #comparison between Iterated training data model and auto arima model
+dm_test4 = dm_test(test, fc2$Forecast, fc_direct$mean) #comparison between Iterated forecast data model and direct forecast model
+dm_test5 = dm_test(test, fc2$Forecast, fc_auto$mean) #comparison between Iterated forecast data model and auto arima model
+dm_test6 = dm_test(test, fc_direct$mean, fc_auto$mean) #comparison between direct forecast model and auto arima model
+
+# create a list of DM_values
+
+DM_values = list("Iterated_training/Iterated_forecast:" = dm_test1$statistic, "Iterated_training/Direct_forecast:" = dm_test2$statistic,"Iterated_training/Auto_Arima:" = dm_test3$statistic,"Iterated_Forecast/Direct_Forecast:" = dm_test4$statistic,"Iterated_Forecast/Auto_Arima:" = dm_test5$statistic,"Direct_Forecast/Auto_Arima:" = dm_test6$statistic)
+
+print(DM_values)
+
+```
+
+<br> 
+
+After running the DM tests, we can see that the DM Statistic always falls in favor of the Iterated Forecast Model. Below is a table that postulates the "winner" in the DM test between all of our models. <br><br>
+
+
+Models/Models  | Iterated Training Model | Iterated Forecast Model | Direct Forecast Model | Auto Arima Model 
+------------- | -------------| ------------- | -------------|------------- | 
+__Iterated Training Model__  |     X        | __*Iterated Forecast Model*__|Direct Forecast| Auto Arima |
+__Iterated Forecast Model__  |__*Iterated Forecast Model*__ |X| __*Iterated Forecast Model*__ |__*Iterated Forecast Model*__ |
+__Direct Forecast Model__    | Direct Forecast |__*Iterated Forecast Model*__|      X       |Direct Forecast |
+__Auto Arima Model__         | Auto Arima | __*Iterated Forecast Model*__| Direct Forecast Model | X|
